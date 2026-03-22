@@ -4,6 +4,8 @@ Provides a file that stores the feature engineering function
 import pandas as pd
 import numpy as np
 
+TARGET = "current_market_value"
+
 position_age_bins = {
     "Goalkeeper": [0, 23, 32, np.inf],
     "Defender":   [0, 22, 30, np.inf],
@@ -190,14 +192,8 @@ def feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
     """
     df = df.copy()
 
-    # ---Positional Encoding---
-    df["main_position"] = pd.Categorical(df["main_position"], 
-                                         categories=["Goalkeeper", "Defender", "Midfield", "Attack"], 
-                                         ordered=False)
     # ---Age-related features---
     today = pd.Timestamp.today()
-    # Date of birth encoding to datetime
-    df['date_of_birth'] = pd.to_datetime(df['date_of_birth'], errors='coerce')
 
     # Age Feature
     df['age'] = (
@@ -210,6 +206,17 @@ def feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
         )
     )
     ).astype('Int64')
+
+    # Define critical columns
+    critical_columns = ['current_market_value']
+    if 'age' in df.columns:
+        critical_columns.append('age')
+    if 'position' in df.columns:
+        critical_columns.append('position')
+
+    # Remove rows with missing critical data
+    df = df.dropna(subset=critical_columns)
+
     # Age squared
     df["age_squared"] = df["age"]**2
 
@@ -219,25 +226,39 @@ def feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
                                         categories=["Veteran", "Youth", "Prime"],
                                         ordered=False)
     
-    # Years Under Contract
-    df["years_under_contract"] = (df["contract_expires"] - pd.Timestamp.now()).dt.days / 365.00
-    df["free_agent"] = df["years_under_contract"] == 0
+    # Contract features
+    df['days_since_joined'] = (today - df['joined']).dt.days
+    df['days_until_contract_expires'] = (df['contract_expires'] - today).dt.days
+    df["free_agent"] = df["days_until_contract_expires"] <= 0
+
+    # Adjustments to be in line with the assumptions made in the notebook
+    ambiguous= (
+    df["competition_name"].isnull() & 
+    df["contract_expires"].isnull() & 
+    (df["free_agent"] == False)
+    )
+
+    df.loc[ambiguous, "free_agent"] = True
+    df.loc[ambiguous, "days_until_contract_expires"] = 0
 
     # ---League Quality---
     df["league_quality"] = df["competition_name"].map(league_quality_map).fillna(1)
     df.loc[df["free_agent"], "league_quality"] = 0
 
     # ---Market Value Features---
+    # Value Percentage Change
+    df['value_change_pct'] = (
+    (df['current_market_value'] - df['value_first']) /
+    df['value_first'] * 100
+    ).round(2)
+
+    # Dropping value_first which is no longer necessary
+    df.drop(columns="value_first",inplace=True)
+
     # Relative Market Value
     club_totals = df.groupby("current_club_name")["current_market_value"].transform("sum")
     df["relative_market_value"] = df["current_market_value"] / club_totals
     df.loc[df["free_agent"], "relative_market_value"] = 0
-
-    # Value Percentage Change
-    df['value_change_pct'] = (
-    (df['value_latest'] - df['value_first']) /
-    df['value_first'] * 100
-    ).round(2)
 
     # ---Stats Features---
     # Goals per 90
@@ -277,5 +298,25 @@ def feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
     df["career_phase"].astype(object) + "_" + df["main_position"].astype(object)
     )
     df["age_X_position"] = pd.Categorical(df["age_X_position"])
+    
+    # Cleaning process for Model Training
+    date_cols = ['joined', 'contract_expires','date_of_birth']
+    data_clean = df[df[TARGET].notna() & np.isfinite(df[TARGET])].copy()
 
-    return df
+    # Replace inf/-inf with NaN in all numeric columns
+    numeric_cols = data_clean.select_dtypes(include=[np.number]).columns
+    data_clean[numeric_cols] = data_clean[numeric_cols].replace([np.inf, -np.inf], np.nan)
+    for col in numeric_cols:
+        if col != TARGET and col in data_clean.columns:
+            median_val = data_clean[col].median()
+            if pd.isna(median_val):
+                median_val = 0  # fallback if all values are NaN
+            data_clean[col] = data_clean[col].fillna(median_val)
+
+    # Fill NaN in categorical columns with 'Unknown'
+    categorical_cols = data_clean.select_dtypes(include=["object"]).columns
+    for col in categorical_cols:
+        # Ensure we don't accidentally fill date columns if any slipped through
+        if col not in date_cols: 
+            data_clean[col] = data_clean[col].fillna('Unknown')
+    return data_clean
