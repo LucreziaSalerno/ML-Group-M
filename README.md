@@ -7,6 +7,7 @@ Machine Learning Project
 - Miguel Teixeira, 56529
 - Isaac Carvalho, 57045
 - Amal Boulila, 70973
+- Guilherme Carvalho, 70364
 
 
 ## ⚽ Business Problem
