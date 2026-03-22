@@ -4,6 +4,8 @@ Provides a file that stores the feature engineering function
 import pandas as pd
 import numpy as np
 
+TARGET = "current_market_value"
+
 position_age_bins = {
     "Goalkeeper": [0, 23, 32, np.inf],
     "Defender":   [0, 22, 30, np.inf],
@@ -297,4 +299,24 @@ def feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
     )
     df["age_X_position"] = pd.Categorical(df["age_X_position"])
     
-    return df
+    # Cleaning process for Model Training
+    date_cols = ['joined', 'contract_expires','date_of_birth']
+    data_clean = df[df[TARGET].notna() & np.isfinite(df[TARGET])].copy()
+
+    # Replace inf/-inf with NaN in all numeric columns
+    numeric_cols = data_clean.select_dtypes(include=[np.number]).columns
+    data_clean[numeric_cols] = data_clean[numeric_cols].replace([np.inf, -np.inf], np.nan)
+    for col in numeric_cols:
+        if col != TARGET and col in data_clean.columns:
+            median_val = data_clean[col].median()
+            if pd.isna(median_val):
+                median_val = 0  # fallback if all values are NaN
+            data_clean[col] = data_clean[col].fillna(median_val)
+
+    # Fill NaN in categorical columns with 'Unknown'
+    categorical_cols = data_clean.select_dtypes(include=["object"]).columns
+    for col in categorical_cols:
+        # Ensure we don't accidentally fill date columns if any slipped through
+        if col not in date_cols: 
+            data_clean[col] = data_clean[col].fillna('Unknown')
+    return data_clean
